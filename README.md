@@ -175,6 +175,8 @@ dsh --profile web --trusted-host dsh.example.com
 
 `0.0.0.0` exposes DSH on every interface. Keep the origin reachable only from Cloudflare or your proxy, and set `DSH_CF_ACCESS_ORDINARY_MODE=required` so a valid JWT is mandatory for every remote `/api` call. Loopback callers still skip the JWT but keep needing DSH's own token/cookie. A Cloudflare Tunnel or SSH tunnel to `127.0.0.1` needs none of this and remains the safer default.
 
+The bind is only needed when the tunnel runs in a different network namespace. If it can share DSH's namespace, `127.0.0.1:3080` is reachable with no bind change: a Kubernetes sidecar in the same Pod, or Docker `network_mode: "service:dsh"` (`docker run --network container:dsh`). DSH's `webserver` schema accepts only `127.0.0.1` and `0.0.0.0`, so binding a single interface IP is not an option.
+
 ## Ordinary API modes
 
 `auth.ordinary` applies only to **remote non-privileged** APIs, including `/api/remote.mux`. Loopback ignores it. Host/Origin always runs first.

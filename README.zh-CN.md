@@ -175,6 +175,8 @@ dsh --profile web --trusted-host dsh.example.com
 
 `0.0.0.0` 会把 DSH 暴露到所有网卡。请确保 Origin 只能从 Cloudflare 或你的代理访问，并设置 `DSH_CF_ACCESS_ORDINARY_MODE=required`，让每次远程 `/api` 调用都必须携带有效 JWT。Loopback 仍然跳过 JWT，但仍需要 DSH 自身的 token/cookie。Cloudflare Tunnel 或 SSH 隧道连到 `127.0.0.1` 不需要上述任何操作，仍是更安全的默认做法。
 
+只有当隧道处于不同 network namespace 时才需要改 bind。若能共享 DSH 的 namespace，`127.0.0.1:3080` 无需任何改动即可访问：Kubernetes 同一 Pod 内的 sidecar，或 Docker `network_mode: "service:dsh"`（`docker run --network container:dsh`）。DSH 的 `webserver` schema 只接受 `127.0.0.1` 和 `0.0.0.0`，因此无法只绑某个网卡 IP。
+
 ## 普通 API 模式
 
 `auth.ordinary` 只作用于**远程非特权** API，包括 `/api/remote.mux`。Loopback 忽略它。Host/Origin 始终先执行。
