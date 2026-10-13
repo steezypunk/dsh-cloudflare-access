@@ -143,6 +143,38 @@ auth:
 
 缺少 `teamDomain` 或 `audiences`：插件仍会启动，loopback 不变，远程 privileged API 被拒绝。
 
+### 监听地址（127.0.0.1 vs 0.0.0.0）
+
+监听地址属于 DSH，不属于本插件。组合后的 `webserver` 行为 `host: ctx.webStartup.host ?? '127.0.0.1'`；本插件只包装 `webServer.register*`，从不自己开 socket。
+
+当前 DSH Web CLI 会主动拒绝 `--host 0.0.0.0`：
+
+```text
+error: --host 0.0.0.0 is intentionally not supported yet for safety:
+it would expose remote code execution to the network; use 127.0.0.1 instead
+```
+
+若要让容器或虚拟机内的反向代理经网络访问 DSH，需在 profile patch 中覆盖 `webserver` 行。覆盖会整行替换 **整个** `config`，因此要一并写回 `port` 与压缩参数：
+
+```yaml
+# $DSH_HOME/profiles/web/cordis.patch.yml
+- id: webserver
+  config:
+    host: '0.0.0.0'
+    port: 3080
+    compression: gzip
+    compressionLevel: 1
+    compressionThresholdBytes: 1024
+```
+
+之后远程信任栅栏仍需认得你的公网主机名：
+
+```sh
+dsh --profile web --trusted-host dsh.example.com
+```
+
+`0.0.0.0` 会把 DSH 暴露到所有网卡。请确保 Origin 只能从 Cloudflare 或你的代理访问，并设置 `DSH_CF_ACCESS_ORDINARY_MODE=required`，让每次远程 `/api` 调用都必须携带有效 JWT。Loopback 仍然跳过 JWT，但仍需要 DSH 自身的 token/cookie。Cloudflare Tunnel 或 SSH 隧道连到 `127.0.0.1` 不需要上述任何操作，仍是更安全的默认做法。
+
 ## 普通 API 模式
 
 `auth.ordinary` 只作用于**远程非特权** API，包括 `/api/remote.mux`。Loopback 忽略它。Host/Origin 始终先执行。

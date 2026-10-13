@@ -143,6 +143,38 @@ auth:
 
 Missing `teamDomain` or `audiences`: the plugin still starts, loopback is unchanged, remote privileged APIs are denied.
 
+### Bind address (127.0.0.1 vs 0.0.0.0)
+
+The listen address belongs to DSH, not to this plugin. The composed `webserver` row sets `host: ctx.webStartup.host ?? '127.0.0.1'`; this plugin only wraps `webServer.register*` and never opens a socket.
+
+Current DSH Web CLI refuses `--host 0.0.0.0` on purpose:
+
+```text
+error: --host 0.0.0.0 is intentionally not supported yet for safety:
+it would expose remote code execution to the network; use 127.0.0.1 instead
+```
+
+To bind all interfaces for a container or VM reverse proxy that reaches DSH over the network, override the `webserver` row in your profile patch. A row override replaces that row's **whole** `config`, so restate `port` and compression:
+
+```yaml
+# $DSH_HOME/profiles/web/cordis.patch.yml
+- id: webserver
+  config:
+    host: '0.0.0.0'
+    port: 3080
+    compression: gzip
+    compressionLevel: 1
+    compressionThresholdBytes: 1024
+```
+
+Then the remote trust fence still has to recognise your public hostname:
+
+```sh
+dsh --profile web --trusted-host dsh.example.com
+```
+
+`0.0.0.0` exposes DSH on every interface. Keep the origin reachable only from Cloudflare or your proxy, and set `DSH_CF_ACCESS_ORDINARY_MODE=required` so a valid JWT is mandatory for every remote `/api` call. Loopback callers still skip the JWT but keep needing DSH's own token/cookie. A Cloudflare Tunnel or SSH tunnel to `127.0.0.1` needs none of this and remains the safer default.
+
 ## Ordinary API modes
 
 `auth.ordinary` applies only to **remote non-privileged** APIs, including `/api/remote.mux`. Loopback ignores it. Host/Origin always runs first.
