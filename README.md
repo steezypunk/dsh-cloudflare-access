@@ -8,7 +8,7 @@ This is a dual-face **Profile Bundle + Web Client** plugin. It does **not** repl
 
 It does not ship a login page, password store, MFA, session table, or Cloudflare API client.
 
-Plugin **`2.0.x`** targets DeepSeek Harness **`0.1.5-alpha.1`**. Plugin **`1.0.x`** is the line before DSH `0.1.2` (live-tested on `0.1.1-rc.2`). Do not assume other DSH releases work until the [compatibility matrix](#compatibility) is updated.
+Plugin **`2.1.x`** targets DeepSeek Harness **`0.2.1`** (live-tested on `0.2.1-rc.3` and `0.2.1-rc.4`). Plugin **`2.0.x`** covers the `0.2.0` line (fork branch) and upstream `0.1.5-alpha.1`. Plugin **`1.0.x`** is the line before DSH `0.1.2` (live-tested on `0.1.1-rc.2`). Do not assume other DSH releases work until the [compatibility matrix](#compatibility) is updated.
 
 ## Architecture
 
@@ -143,39 +143,39 @@ auth:
 
 Missing `teamDomain` or `audiences`: the plugin still starts, loopback is unchanged, remote privileged APIs are denied.
 
-### Bind address (127.0.0.1 vs 0.0.0.0)
+### Bind address (127.0.0.1 vs a concrete interface)
 
 The listen address belongs to DSH, not to this plugin. The composed `webserver` row sets `host: ctx.webStartup.host ?? '127.0.0.1'`; this plugin only wraps `webServer.register*` and never opens a socket.
 
-Current DSH Web CLI refuses `--host 0.0.0.0` on purpose:
+DSH 0.2.1 rejects the wildcard address:
 
 ```text
-error: --host 0.0.0.0 is intentionally not supported yet for safety:
-it would expose remote code execution to the network; use 127.0.0.1 instead
+error: host "0.0.0.0" is an unspecified (wildcard) address, which is not supported:
+bind one concrete IPv4 or IPv6 address of a local interface instead
 ```
 
-To bind all interfaces for a container or VM reverse proxy that reaches DSH over the network, override the `webserver` row in your profile patch. A row override replaces that row's **whole** `config`, so restate `port` and compression:
+For a container or VM whose tunnel lives in another network namespace, bind the box's concrete interface address and pass it to `dsh web`:
+
+```sh
+dsh --profile web --trusted-host dsh.example.com --host 192.0.2.10
+```
+
+Keep the `webserver` row's `host` on `ctx.webStartup.host`. A row override replaces the row's **whole** `config`, so restate `port` and compression:
 
 ```yaml
-# $DSH_HOME/profiles/web/cordis.patch.yml
+# $DSH_HOME/cordis.patch.yml
 - id: webserver
   config:
-    host: '0.0.0.0'
+    host: !!js ctx.webStartup.host ?? '127.0.0.1'
     port: 3080
     compression: gzip
     compressionLevel: 1
     compressionThresholdBytes: 1024
 ```
 
-Then the remote trust fence still has to recognise your public hostname:
+The boxes `dsh-web` wrapper computes the first non-loopback IPv4 and passes `--host` for you, keeping the published port reachable from a tunnel container.
 
-```sh
-dsh --profile web --trusted-host dsh.example.com
-```
-
-`0.0.0.0` exposes DSH on every interface. Keep the origin reachable only from Cloudflare or your proxy, and set `DSH_CF_ACCESS_ORDINARY_MODE=required` so a valid JWT is mandatory for every remote `/api` call. Loopback callers still skip the JWT but keep needing DSH's own token/cookie. A Cloudflare Tunnel or SSH tunnel to `127.0.0.1` needs none of this and remains the safer default.
-
-The bind is only needed when the tunnel runs in a different network namespace. If it can share DSH's namespace, `127.0.0.1:3080` is reachable with no bind change: a Kubernetes sidecar in the same Pod, or Docker `network_mode: "service:dsh"` (`docker run --network container:dsh`). DSH's `webserver` schema accepts only `127.0.0.1` and `0.0.0.0`, so binding a single interface IP is not an option.
+A concrete interface bind exposes DSH on that address. Keep the origin reachable only from Cloudflare or your proxy, and set `DSH_CF_ACCESS_ORDINARY_MODE=required` so a valid JWT is mandatory for every remote `/api` call. Loopback callers still skip the JWT but keep needing DSH's own token/cookie. A tunnel that shares DSH's namespace can keep `127.0.0.1:3080` and needs none of this.
 
 ## Ordinary API modes
 
@@ -209,7 +209,8 @@ This plugin does not authorize `host.pickDirectory` or `host.openPath`. Some nat
 | Plugin | DSH | Status |
 | --- | --- | --- |
 | 1.0.x | 0.1.1-rc.2（0.1.2 之前） | Live-tested (Web profile, remote Settings / Credentials). `apiProxy` + privileged pin. Not compatible with DSH 0.1.2+. |
-| 2.0.x | 0.1.5-alpha.1 | Live-tested on a Web profile behind Cloudflare Access (remote Settings without DSH `?token=`). Unit/integration tests. CI does not start a DSH process. |
+| 2.1.x | 0.2.1-rc.3 / 0.2.1-rc.4 | Live-tested with a real Cloudflare Access JWT on a Web profile: remote `/api/settings/describe` 200, missing 401, invalid 403. |
+| 2.0.x | 0.1.5-alpha.1; fork branch `dsh-0.2.0-rc.2` covers 0.2.0 | Live-tested on a Web profile behind Cloudflare Access (remote Settings without DSH `?token=`). Unit/integration tests. CI does not start a DSH process. |
 
 Do not assume newer DSH releases work until this matrix is updated.
 

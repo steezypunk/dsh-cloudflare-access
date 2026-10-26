@@ -8,7 +8,7 @@
 
 不提供登录页、密码库、MFA、会话表或 Cloudflare API 客户端。
 
-插件 **`2.0.x`** 对准 DeepSeek Harness **`0.1.5-alpha.1`**。插件 **`1.0.x`** 是 DSH `0.1.2` 之前那条线（live 验证于 `0.1.1-rc.2`）。在[兼容性矩阵](#兼容性)更新之前，不要默认其他 DSH 版本可用。
+插件 **`2.1.x`** 对准 DeepSeek Harness **`0.2.1`**（`0.2.1-rc.3` / `0.2.1-rc.4` live 验证）。插件 **`2.0.x`** 覆盖 `0.2.0` 线（fork 分支）以及上游 `0.1.5-alpha.1`。插件 **`1.0.x`** 是 DSH `0.1.2` 之前那条线（live 验证于 `0.1.1-rc.2`）。在[兼容性矩阵](#兼容性)更新之前，不要默认其他 DSH 版本可用。
 
 ## 架构
 
@@ -143,39 +143,39 @@ auth:
 
 缺少 `teamDomain` 或 `audiences`：插件仍会启动，loopback 不变，远程 privileged API 被拒绝。
 
-### 监听地址（127.0.0.1 vs 0.0.0.0）
+### 监听地址（127.0.0.1 vs 具体网卡地址）
 
 监听地址属于 DSH，不属于本插件。组合后的 `webserver` 行为 `host: ctx.webStartup.host ?? '127.0.0.1'`；本插件只包装 `webServer.register*`，从不自己开 socket。
 
-当前 DSH Web CLI 会主动拒绝 `--host 0.0.0.0`：
+DSH 0.2.1 会拒绝通配地址：
 
 ```text
-error: --host 0.0.0.0 is intentionally not supported yet for safety:
-it would expose remote code execution to the network; use 127.0.0.1 instead
+error: host "0.0.0.0" is an unspecified (wildcard) address, which is not supported:
+bind one concrete IPv4 or IPv6 address of a local interface instead
 ```
 
-若要让容器或虚拟机内的反向代理经网络访问 DSH，需在 profile patch 中覆盖 `webserver` 行。覆盖会整行替换 **整个** `config`，因此要一并写回 `port` 与压缩参数：
+若隧道位于不同 network namespace，需绑定机器具体网卡地址并通过 `dsh web` 传入：
+
+```sh
+dsh --profile web --trusted-host dsh.example.com --host 192.0.2.10
+```
+
+`webserver` 行的 `host` 保持 `ctx.webStartup.host`。覆盖会整行替换 **整个** `config`，因此要一并写回 `port` 与压缩参数：
 
 ```yaml
-# $DSH_HOME/profiles/web/cordis.patch.yml
+# $DSH_HOME/cordis.patch.yml
 - id: webserver
   config:
-    host: '0.0.0.0'
+    host: !!js ctx.webStartup.host ?? '127.0.0.1'
     port: 3080
     compression: gzip
     compressionLevel: 1
     compressionThresholdBytes: 1024
 ```
 
-之后远程信任栅栏仍需认得你的公网主机名：
+boxes 镜像里的 `dsh-web` wrapper 会自动取第一个非 loopback IPv4 并传入 `--host`，确保隧道容器能访问发布端口。
 
-```sh
-dsh --profile web --trusted-host dsh.example.com
-```
-
-`0.0.0.0` 会把 DSH 暴露到所有网卡。请确保 Origin 只能从 Cloudflare 或你的代理访问，并设置 `DSH_CF_ACCESS_ORDINARY_MODE=required`，让每次远程 `/api` 调用都必须携带有效 JWT。Loopback 仍然跳过 JWT，但仍需要 DSH 自身的 token/cookie。Cloudflare Tunnel 或 SSH 隧道连到 `127.0.0.1` 不需要上述任何操作，仍是更安全的默认做法。
-
-只有当隧道处于不同 network namespace 时才需要改 bind。若能共享 DSH 的 namespace，`127.0.0.1:3080` 无需任何改动即可访问：Kubernetes 同一 Pod 内的 sidecar，或 Docker `network_mode: "service:dsh"`（`docker run --network container:dsh`）。DSH 的 `webserver` schema 只接受 `127.0.0.1` 和 `0.0.0.0`，因此无法只绑某个网卡 IP。
+绑定具体网卡会把 DSH 暴露在该地址上。请确保 Origin 只能从 Cloudflare 或你的代理访问，并设置 `DSH_CF_ACCESS_ORDINARY_MODE=required`，让每次远程 `/api` 调用都必须携带有效 JWT。Loopback 仍然跳过 JWT，但仍需要 DSH 自身的 token/cookie。共享 DSH namespace 的隧道可以继续使用 `127.0.0.1:3080`，无需上述操作。
 
 ## 普通 API 模式
 
@@ -209,7 +209,8 @@ dsh --profile web --trusted-host dsh.example.com
 | 插件 | DSH | 状态 |
 | --- | --- | --- |
 | 1.0.x | 0.1.1-rc.2（0.1.2 之前） | Live 验证（Web profile，远程 Settings / Credentials）。走 `apiProxy` + privileged pin。与 DSH 0.1.2+ 不兼容。 |
-| 2.0.x | 0.1.5-alpha.1 | 已在 Cloudflare Access 后的 Web profile 上 live 验证（远程 Settings 不需要 DSH `?token=`）。单元/集成测试。CI 不启动 DSH 进程。 |
+| 2.1.x | 0.2.1-rc.3 / 0.2.1-rc.4 | 已用真实 Cloudflare Access JWT 在 Web profile 上 live 验证：远程 `/api/settings/describe` 200，无 JWT 401，无效 JWT 403。 |
+| 2.0.x | 0.1.5-alpha.1；fork 分支 `dsh-0.2.0-rc.2` 覆盖 0.2.0 | 已在 Cloudflare Access 后的 Web profile 上 live 验证（远程 Settings 不需要 DSH `?token=`）。单元/集成测试。CI 不启动 DSH 进程。 |
 
 在本矩阵更新之前，不要默认更新的 DSH 版本可用。
 
