@@ -698,6 +698,109 @@ describe('Access JWT substitutes for the DSH launch-token cookie', () => {
   })
 })
 
+describe('DSH 0.2.1 connection.admit integration', () => {
+  it('serves a valid Access JWT when /api calls admit() directly', async () => {
+    const pair = await generateKeyPair('RS256', { extractable: true })
+    const publicJwk = await exportJWK(pair.publicKey)
+    publicJwk.kid = 'k1'
+    publicJwk.alg = 'RS256'
+    publicJwk.use = 'sig'
+    const jwks = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ keys: [publicJwk] }))
+    })
+    await new Promise<void>((resolve) => { jwks.listen(0, '127.0.0.1', () => { resolve() }) })
+    const addr = jwks.address()
+    if (addr === null || typeof addr === 'string') throw new Error('port')
+    const origin = `http://127.0.0.1:${String(addr.port)}`
+
+    const webServer = createFakeWebServer()
+    const disposers: Array<() => void> = []
+    const connection = {
+      trustedHosts: ['dsh.example.com'],
+      browserPeer: { id: 'browser-peer' },
+      admit(_req: IncomingMessage) {
+        return { rejection: 401 as const }
+      },
+      requestRejection(_req: IncomingMessage) {
+        return 401 as const
+      },
+      authorizeIndex(_req: IncomingMessage, _res: ServerResponse) {
+        return false
+      },
+    }
+    applyServer({
+      webServer,
+      logger: { info() {}, warn() {} },
+      effect: collectEffects(disposers),
+      get(name: string) {
+        if (name === 'connection') return connection
+        return undefined
+      },
+      inject(deps: readonly string[], callback: (fiber: unknown) => void) {
+        if (deps.includes('connection')) callback({ connection })
+      },
+    }, {
+      cloudflare: { teamDomain: origin, audiences: ['aud'] },
+    })
+
+    webServer.register({
+      kind: 'prefix',
+      path: '/api',
+      handler: async (req, res) => {
+        const admission = connection.admit(req)
+        if ('rejection' in admission) {
+          res.writeHead(admission.rejection)
+          res.end('rejected')
+          return
+        }
+        res.writeHead(200)
+        res.end('admitted')
+      },
+    })
+    const route = webServer.routes.get('prefix:/api')
+    if (route === undefined) throw new Error('route missing')
+
+    const token = await new SignJWT({})
+      .setProtectedHeader({ alg: 'RS256', kid: 'k1' })
+      .setIssuedAt()
+      .setIssuer(origin)
+      .setAudience('aud')
+      .setExpirationTime('5m')
+      .sign(pair.privateKey)
+
+    const missing = await invoke(route.handler, {
+      url: '/api/settings/describe',
+      headers: { host: 'dsh.example.com', origin: 'https://dsh.example.com' },
+    })
+    expect(missing.status).toBe(401)
+
+    const valid = await invoke(route.handler, {
+      url: '/api/settings/describe',
+      headers: {
+        host: 'dsh.example.com',
+        origin: 'https://dsh.example.com',
+        'cf-access-jwt-assertion': token,
+      },
+    })
+    expect(valid.status).toBe(200)
+    expect(valid.body).toBe('admitted')
+
+    const bad = await invoke(route.handler, {
+      url: '/api/settings/describe',
+      headers: {
+        host: 'dsh.example.com',
+        origin: 'https://dsh.example.com',
+        'cf-access-jwt-assertion': 'bad.token.here',
+      },
+    })
+    expect(bad.status).toBe(403)
+
+    for (const dispose of disposers) dispose()
+    jwks.close()
+  })
+})
+
 async function invoke(
   handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>,
   input: { url: string, headers: Record<string, string> },

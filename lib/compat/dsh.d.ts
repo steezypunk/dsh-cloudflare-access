@@ -26,9 +26,16 @@ export interface WebServerLike {
     registerUpgrade(route: WebUpgradeRoute): () => void;
     registerFallback?(handler: WebRoute['handler']): () => void;
 }
+export interface ConnectionAdmission {
+    peer?: unknown;
+    rejection?: 401 | 403;
+}
 export interface ConnectionAuthLike {
     requestRejection(request: IncomingMessage): 401 | 403 | undefined;
     authorizeIndex(request: IncomingMessage, response: ServerResponse): boolean;
+    /** DSH 0.2.1's /api route calls admit() directly instead of requestRejection(). */
+    admit?(request: IncomingMessage): ConnectionAdmission;
+    browserPeer?: unknown;
 }
 export interface CompatFiber {
     connection?: ConnectionAuthLike;
