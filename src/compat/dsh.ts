@@ -34,9 +34,17 @@ export interface WebServerLike {
   registerFallback?(handler: WebRoute['handler']): () => void
 }
 
+export interface ConnectionAdmission {
+  peer?: unknown
+  rejection?: 401 | 403
+}
+
 export interface ConnectionAuthLike {
   requestRejection(request: IncomingMessage): 401 | 403 | undefined
   authorizeIndex(request: IncomingMessage, response: ServerResponse): boolean
+  /** DSH 0.2.1's /api route calls admit() directly instead of requestRejection(). */
+  admit?(request: IncomingMessage): ConnectionAdmission
+  browserPeer?: unknown
 }
 
 export interface CompatFiber {
@@ -128,8 +136,11 @@ function wrapBrowserSession(
 ): void {
   const hadOwnRejection = Object.prototype.hasOwnProperty.call(connection, 'requestRejection')
   const hadOwnIndex = Object.prototype.hasOwnProperty.call(connection, 'authorizeIndex')
+  const hadOwnAdmit = Object.prototype.hasOwnProperty.call(connection, 'admit')
   const originalRejection = connection.requestRejection
   const originalIndex = connection.authorizeIndex
+  const originalAdmitMethod = connection.admit
+  const originalAdmit = originalAdmitMethod?.bind(connection)
 
   connection.requestRejection = (request) => {
     const rejection = originalRejection.call(connection, request)
@@ -140,10 +151,25 @@ function wrapBrowserSession(
     if (skipped.has(request)) return true
     return originalIndex.call(connection, request, response)
   }
+  if (originalAdmit !== undefined) {
+    connection.admit = (request) => {
+      // The route gate runs first and marks a request whose Cloudflare JWT is
+      // valid. DSH 0.2.1's /api handler then calls admit() directly, bypassing
+      // requestRejection(); hand it the shared browser peer explicitly.
+      if (skipped.has(request) && connection.browserPeer !== undefined) {
+        return { peer: connection.browserPeer }
+      }
+      return originalAdmit(request)
+    }
+  }
 
   effect(() => () => {
     restoreMethod(connection, 'requestRejection', originalRejection, hadOwnRejection)
     restoreMethod(connection, 'authorizeIndex', originalIndex, hadOwnIndex)
+    if (originalAdmitMethod !== undefined) {
+      if (hadOwnAdmit) connection.admit = originalAdmitMethod
+      else delete (connection as Partial<ConnectionAuthLike>).admit
+    }
   }, 'dsh-cloudflare-access: restore connection browser-session')
 }
 

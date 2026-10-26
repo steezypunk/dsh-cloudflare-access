@@ -25,7 +25,22 @@ export interface ServerPluginContext {
 
 function trustedHostsFrom(ctx: ServerPluginContext): readonly string[] {
   const runtime = ctx.get('webRuntime') as { trustedHosts?: string[] } | undefined
-  return runtime?.trustedHosts ?? []
+  if (runtime?.trustedHosts !== undefined && runtime.trustedHosts.length > 0) {
+    return runtime.trustedHosts
+  }
+  // DSH 0.2.1 moved the fence's trusted-host list to the Connection service.
+  const connection = ctx.get('connection') as { trustedHosts?: string[] } | undefined
+  if (connection?.trustedHosts !== undefined && connection.trustedHosts.length > 0) {
+    return connection.trustedHosts
+  }
+  const hosts: string[] = []
+  const argv = process.argv
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!
+    if (arg === '--trusted-host' && argv[i + 1] !== undefined) hosts.push(argv[i + 1] as string)
+    else if (argv[i]?.startsWith('--trusted-host=')) hosts.push(arg.slice('--trusted-host='.length))
+  }
+  return hosts
 }
 
 export function apply(ctx: ServerPluginContext, config?: CordisConfig): void {

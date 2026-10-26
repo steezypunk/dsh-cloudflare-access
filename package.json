@@ -1,6 +1,6 @@
 {
   "name": "dsh-cloudflare-access",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Cloudflare Access JWT verification and remote DSH privileged authorization",
   "type": "module",
   "license": "MIT",
@@ -63,8 +63,8 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",
-    "@deepseek-ai/dsh-client-connection": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-host-webserver": "0.2.0-rc.2"
+    "@deepseek-ai/dsh-client-connection": "^0.2.1-rc.3",
+    "@deepseek-ai/dsh-host-webserver": "^0.2.1-rc.3"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": { "optional": true },

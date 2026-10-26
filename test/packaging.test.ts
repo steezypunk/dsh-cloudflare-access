@@ -17,8 +17,8 @@ describe('dsh plugin manifest', () => {
     expect(pkg.files).toEqual(expect.arrayContaining(['lib', 'cordis.patch.yml', 'README.md', 'LICENSE']))
     expect(pkg.keywords).toContain('dsh-plugin')
     expect(pkg.publishConfig.access).toBe('public')
-    expect(pkg.peerDependencies['@deepseek-ai/dsh-host-webserver']).toBe('0.2.0-rc.2')
-    expect(pkg.peerDependencies['@deepseek-ai/dsh-client-connection']).toBe('0.2.0-rc.2')
+    expect(pkg.peerDependencies['@deepseek-ai/dsh-host-webserver']).toBe('^0.2.1-rc.3')
+    expect(pkg.peerDependencies['@deepseek-ai/dsh-client-connection']).toBe('^0.2.1-rc.3')
     expect(pkg.peerDependencies['@deepseek-ai/dsh-host-apiproxy']).toBeUndefined()
   })
 
