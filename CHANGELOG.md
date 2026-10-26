@@ -4,6 +4,12 @@
 
 - Document the listen address: it belongs to DSH's `webserver` row, not this plugin. DSH's Web CLI refuses `--host 0.0.0.0`, so binding all interfaces requires overriding the `webserver` row in the profile patch (plus `--trusted-host`).
 
+## 2.1.0
+
+- Add DSH 0.2.1 support. 0.2.1's `/api` route calls `connection.admit()` directly, so wrap `admit()` and return the shared browser peer for a request the Cloudflare route gate already authorized. Read trusted hosts from the Connection service (0.2.1 moved them there), with a `--trusted-host` argv fallback.
+- Peer `@deepseek-ai/dsh-client-connection` and `@deepseek-ai/dsh-host-webserver` at `^0.2.1-rc.3`. Verified with a real Cloudflare Access JWT on `0.2.1-rc.3` and `0.2.1-rc.4` (remote `/api/settings/describe` 200; missing JWT 401; invalid JWT 403).
+- Document the 0.2.1 bind change: `host: 0.0.0.0` is rejected. Run with a concrete interface address (`--host`) and keep the `webserver` patch on `ctx.webStartup.host`.
+
 ## 2.0.0
 
 - Overlay Cloudflare JWT on the original `/api`, `/api/remote.mux`, and index fallback. A valid Access JWT on a remote trusted host skips DSH's launch-token cookie, including Access login callbacks with `sec-fetch-site: cross-site`. Loopback still requires the official token.
