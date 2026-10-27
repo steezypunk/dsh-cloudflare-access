@@ -306,7 +306,7 @@ export function installServerCompat(ctx: CompatContext, deps: ServerCompatDeps):
   if (originalRegisterFallback !== undefined) {
     ctx.webServer.registerFallback = (handler: WebRoute['handler']): (() => void) => {
       return originalRegisterFallback(async (req, res) => {
-        const gate = await authorize(req, deps)
+        const gate = await authorize(req, deps, true)
         if (gate.action === 'deny') {
           logDenied(logger, {
             method: gate.method,
@@ -349,7 +349,11 @@ export function installServerCompat(ctx: CompatContext, deps: ServerCompatDeps):
  * Loopback 交给原 handler（DSH 自己走 token/Cookie）。
  * Access 登录回调经常是 `sec-fetch-site: cross-site` 导航，跳过 Cookie 只要求 Host 在 `--trusted-host` 中且 JWT 有效，不套用完整 Origin 栅栏。policy deny 仍要求完整 Host/Origin。
  */
-async function authorize(req: IncomingMessage, deps: ServerCompatDeps): Promise<Gate> {
+async function authorize(
+  req: IncomingMessage,
+  deps: ServerCompatDeps,
+  allowCrossSiteSkip = false,
+): Promise<Gate> {
   const headers = nodeHeaders(req)
   if (requestIsLoopback(headers)) return { action: 'forward', skipBrowserSession: false }
 
@@ -371,6 +375,7 @@ async function authorize(req: IncomingMessage, deps: ServerCompatDeps): Promise<
   }
 
   const skipBrowserSession = remoteHostTrusted && jwt.outcome === 'valid'
+    && (hostOriginTrusted || allowCrossSiteSkip)
   if (!hostOriginTrusted || !needPolicyJwt) {
     return { action: 'forward', skipBrowserSession }
   }
