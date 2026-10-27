@@ -4,6 +4,10 @@
 
 - Document the listen address: it belongs to DSH's `webserver` row, not this plugin. DSH's Web CLI refuses `--host 0.0.0.0`, so binding all interfaces requires overriding the `webserver` row in the profile patch (plus `--trusted-host`).
 
+## 2.1.1
+
+- Cover dsh-better-sidebar's `/sidebar/*` HTTP and WebSocket routes. The sidebar fence calls `connection.requestRejection()`, which now yields to a request this plugin already authorized with a valid Access JWT. Sidebar routes registered before this plugin are wrapped through the DSH 0.2.1 route tables as well.
+
 ## 2.1.0
 
 - Add DSH 0.2.1 support. 0.2.1's `/api` route calls `connection.admit()` directly, so wrap `admit()` and return the shared browser peer for a request the Cloudflare route gate already authorized. Read trusted hosts from the Connection service (0.2.1 moved them there), with a `--trusted-host` argv fallback.

@@ -13,6 +13,8 @@ interface FakeWebServer {
   registerFallback?(handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>): () => void
   routes: Map<string, WebRoute>
   upgrades: Map<string, WebUpgradeRoute>
+  exact: Map<string, WebRoute>
+  prefixes: Map<string, WebRoute>
 }
 
 function collectEffects(disposers: Array<() => void>) {
@@ -25,12 +27,21 @@ function collectEffects(disposers: Array<() => void>) {
 function createFakeWebServer(): FakeWebServer {
   const routes = new Map<string, WebRoute>()
   const upgrades = new Map<string, WebUpgradeRoute>()
+  const exact = new Map<string, WebRoute>()
+  const prefixes = new Map<string, WebRoute>()
   return {
     routes,
     upgrades,
+    exact,
+    prefixes,
     register(route) {
       routes.set(`${route.kind}:${route.path}`, route)
-      return () => { routes.delete(`${route.kind}:${route.path}`) }
+      const table = route.kind === 'exact' ? exact : prefixes
+      table.set(route.path, route)
+      return () => {
+        routes.delete(`${route.kind}:${route.path}`)
+        table.delete(route.path)
+      }
     },
     registerUpgrade(route) {
       upgrades.set(route.path, route)
@@ -798,6 +809,128 @@ describe('DSH 0.2.1 connection.admit integration', () => {
 
     for (const dispose of disposers) dispose()
     jwks.close()
+  })
+})
+
+describe('better-sidebar /sidebar route integration', () => {
+  async function setupSidebar() {
+    const pair = await generateKeyPair('RS256', { extractable: true })
+    const publicJwk = await exportJWK(pair.publicKey)
+    publicJwk.kid = 'k1'
+    publicJwk.alg = 'RS256'
+    publicJwk.use = 'sig'
+    const jwks = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ keys: [publicJwk] }))
+    })
+    await new Promise<void>((resolve) => { jwks.listen(0, '127.0.0.1', () => { resolve() }) })
+    const addr = jwks.address()
+    if (addr === null || typeof addr === 'string') throw new Error('port')
+    const origin = `http://127.0.0.1:${String(addr.port)}`
+    const webServer = createFakeWebServer()
+    const disposers: Array<() => void> = []
+    const connection = {
+      trustedHosts: ['dsh.example.com'],
+      browserPeer: { id: 'browser-peer' },
+      admit(_req: IncomingMessage) {
+        return { rejection: 403 as const }
+      },
+      requestRejection(_req: IncomingMessage) {
+        return 403 as const
+      },
+      authorizeIndex(_req: IncomingMessage, _res: ServerResponse) {
+        return false
+      },
+    }
+    const ctx = {
+      webServer,
+      logger: { info() {}, warn() {} },
+      effect: collectEffects(disposers),
+      get(name: string) {
+        if (name === 'connection') return connection
+        return undefined
+      },
+      inject(deps: readonly string[], callback: (fiber: unknown) => void) {
+        if (deps.includes('connection')) callback({ connection })
+      },
+    }
+    const token = await new SignJWT({})
+      .setProtectedHeader({ alg: 'RS256', kid: 'k1' })
+      .setIssuedAt()
+      .setIssuer(origin)
+      .setAudience('aud')
+      .setExpirationTime('5m')
+      .sign(pair.privateKey)
+    return { jwks, origin, webServer, connection, ctx, disposers, token }
+  }
+
+  function sidebarHandler(connection: { requestRejection(req: IncomingMessage): 401 | 403 | undefined }) {
+    return async (req: IncomingMessage, res: ServerResponse) => {
+      if (connection.requestRejection(req) !== undefined) {
+        res.writeHead(403)
+        res.end('forbidden')
+        return
+      }
+      res.writeHead(200)
+      res.end('sidebar')
+    }
+  }
+
+  it('marks future /sidebar routes and skips the connection 403 fence', async () => {
+    const setup = await setupSidebar()
+    applyServer(setup.ctx, { cloudflare: { teamDomain: setup.origin, audiences: ['aud'] } })
+    setup.webServer.register({
+      kind: 'prefix',
+      path: '/sidebar/api',
+      handler: sidebarHandler(setup.connection),
+    })
+    const route = setup.webServer.routes.get('prefix:/sidebar/api')
+    if (route === undefined) throw new Error('route missing')
+
+    const missing = await invoke(route.handler, {
+      url: '/sidebar/api/unknown',
+      headers: { host: 'dsh.example.com', origin: 'https://dsh.example.com' },
+    })
+    expect(missing.status).toBe(403)
+
+    const valid = await invoke(route.handler, {
+      url: '/sidebar/api/unknown',
+      headers: {
+        host: 'dsh.example.com',
+        origin: 'https://dsh.example.com',
+        'cf-access-jwt-assertion': setup.token,
+      },
+    })
+    expect(valid.status).toBe(200)
+    expect(valid.body).toBe('sidebar')
+
+    for (const dispose of setup.disposers) dispose()
+    setup.jwks.close()
+  })
+
+  it('wraps /sidebar routes registered before the plugin', async () => {
+    const setup = await setupSidebar()
+    setup.webServer.register({
+      kind: 'prefix',
+      path: '/sidebar/bundle',
+      handler: sidebarHandler(setup.connection),
+    })
+    applyServer(setup.ctx, { cloudflare: { teamDomain: setup.origin, audiences: ['aud'] } })
+    const route = setup.webServer.prefixes.get('/sidebar/bundle')
+    if (route === undefined) throw new Error('route missing')
+
+    const valid = await invoke(route.handler, {
+      url: '/sidebar/bundle/client.js',
+      headers: {
+        host: 'dsh.example.com',
+        'cf-access-jwt-assertion': setup.token,
+      },
+    })
+    expect(valid.status).toBe(200)
+    expect(valid.body).toBe('sidebar')
+
+    for (const dispose of setup.disposers) dispose()
+    setup.jwks.close()
   })
 })
 

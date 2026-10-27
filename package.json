@@ -1,6 +1,6 @@
 {
   "name": "dsh-cloudflare-access",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Cloudflare Access JWT verification and remote DSH privileged authorization",
   "type": "module",
   "license": "MIT",
