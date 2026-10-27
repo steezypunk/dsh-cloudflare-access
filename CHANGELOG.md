@@ -7,6 +7,7 @@
 ## 2.1.1
 
 - Cover dsh-better-sidebar's `/sidebar/*` HTTP and WebSocket routes. The sidebar fence calls `connection.requestRejection()`, which now yields to a request this plugin already authorized with a valid Access JWT. Sidebar routes registered before this plugin are wrapped through the DSH 0.2.1 route tables as well.
+- Keep the Host/Origin fence mandatory for gated routes. Only the index fallback retains the documented cross-site Access-login exception.
 
 ## 2.1.0
 
