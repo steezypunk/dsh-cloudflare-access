@@ -32,6 +32,10 @@ export interface WebServerLike {
   register(route: WebRoute): () => void
   registerUpgrade(route: WebUpgradeRoute): () => void
   registerFallback?(handler: WebRoute['handler']): () => void
+  /** DSH 0.2.1 exposes its route tables; used to wrap routes registered before this plugin. */
+  exact?: Map<string, WebRoute>
+  prefixes?: Map<string, WebRoute>
+  upgrades?: Map<string, WebUpgradeRoute>
 }
 
 export interface ConnectionAdmission {
@@ -106,6 +110,22 @@ function isRemoteMuxUpgrade(route: WebUpgradeRoute): boolean {
   return route.path === REMOTE_STREAM_MUX_PATH
 }
 
+function isSidebarPath(path: string): boolean {
+  return path === '/sidebar' || path.startsWith('/sidebar/')
+}
+
+function isSidebarRoute(route: WebRoute | WebUpgradeRoute): boolean {
+  return isSidebarPath(route.path)
+}
+
+function isGatedHttpRoute(route: WebRoute): boolean {
+  return isApiPrefix(route) || isSidebarRoute(route)
+}
+
+function isGatedUpgradeRoute(route: WebUpgradeRoute): boolean {
+  return isRemoteMuxUpgrade(route) || isSidebarRoute(route)
+}
+
 function connectionFrom(fiber: CompatFiber): ConnectionAuthLike | undefined {
   if (fiber.connection !== undefined) return fiber.connection
   const found = fiber.get?.('connection')
@@ -143,9 +163,10 @@ function wrapBrowserSession(
   const originalAdmit = originalAdmitMethod?.bind(connection)
 
   connection.requestRejection = (request) => {
-    const rejection = originalRejection.call(connection, request)
-    if (rejection === 401 && skipped.has(request)) return undefined
-    return rejection
+    // skipped is set only after the route gate verified Host/Origin and a valid
+    // Access JWT. The connection's own 401/403 fence must not undo that.
+    if (skipped.has(request)) return undefined
+    return originalRejection.call(connection, request)
   }
   connection.authorizeIndex = (request, response) => {
     if (skipped.has(request)) return true
@@ -188,10 +209,12 @@ export function installServerCompat(ctx: CompatContext, deps: ServerCompatDeps):
     if (skip) skipped.add(req)
   }
 
-  ctx.webServer.register = (route: WebRoute): (() => void) => {
-    if (!isApiPrefix(route)) return originalRegister.call(ctx.webServer, route)
+  const wrappedHttpRoutes = new WeakSet<object>()
+  const wrappedUpgradeRoutes = new WeakSet<object>()
+
+  const gateHttp = (route: WebRoute): WebRoute => {
     const inner = route.handler
-    return originalRegister.call(ctx.webServer, {
+    const wrapped: WebRoute = {
       ...route,
       handler: async (req, res) => {
         const gate = await authorize(req, deps)
@@ -207,13 +230,14 @@ export function installServerCompat(ctx: CompatContext, deps: ServerCompatDeps):
         markAndForward(req, gate.skipBrowserSession)
         await inner(req, res)
       },
-    })
+    }
+    wrappedHttpRoutes.add(wrapped)
+    return wrapped
   }
 
-  ctx.webServer.registerUpgrade = (route: WebUpgradeRoute): (() => void) => {
-    if (!isRemoteMuxUpgrade(route)) return originalRegisterUpgrade.call(ctx.webServer, route)
+  const gateUpgrade = (route: WebUpgradeRoute): WebUpgradeRoute => {
     const inner = route.handler
-    return originalRegisterUpgrade.call(ctx.webServer, {
+    const wrapped: WebUpgradeRoute = {
       ...route,
       handler: async (req, socket, head) => {
         const gate = await authorize(req, deps)
@@ -229,7 +253,54 @@ export function installServerCompat(ctx: CompatContext, deps: ServerCompatDeps):
         markAndForward(req, gate.skipBrowserSession)
         await inner(req, socket, head)
       },
-    })
+    }
+    wrappedUpgradeRoutes.add(wrapped)
+    return wrapped
+  }
+
+  ctx.webServer.register = (route: WebRoute): (() => void) => {
+    if (!isGatedHttpRoute(route)) return originalRegister.call(ctx.webServer, route)
+    return originalRegister.call(ctx.webServer, gateHttp(route))
+  }
+
+  ctx.webServer.registerUpgrade = (route: WebUpgradeRoute): (() => void) => {
+    if (!isGatedUpgradeRoute(route)) return originalRegisterUpgrade.call(ctx.webServer, route)
+    return originalRegisterUpgrade.call(ctx.webServer, gateUpgrade(route))
+  }
+
+  interface OriginalHttpRoute {
+    map: Map<string, WebRoute>
+    path: string
+    route: WebRoute
+    wrapped: WebRoute
+  }
+  interface OriginalUpgradeRoute {
+    map: Map<string, WebUpgradeRoute>
+    path: string
+    route: WebUpgradeRoute
+    wrapped: WebUpgradeRoute
+  }
+  const originalRoutes: OriginalHttpRoute[] = []
+  const originalUpgrades: OriginalUpgradeRoute[] = []
+
+  // dsh-better-sidebar registers /sidebar/* before this plugin applies, and its
+  // fence calls connection.requestRejection(). Wrap those existing routes too.
+  for (const map of [ctx.webServer.exact, ctx.webServer.prefixes]) {
+    if (map === undefined) continue
+    for (const [path, route] of map) {
+      if (!isGatedHttpRoute(route) || wrappedHttpRoutes.has(route)) continue
+      const wrapped = gateHttp(route)
+      map.set(path, wrapped)
+      originalRoutes.push({ map, path, route, wrapped })
+    }
+  }
+  if (ctx.webServer.upgrades !== undefined) {
+    for (const [path, route] of ctx.webServer.upgrades) {
+      if (!isGatedUpgradeRoute(route) || wrappedUpgradeRoutes.has(route)) continue
+      const wrapped = gateUpgrade(route)
+      ctx.webServer.upgrades.set(path, wrapped)
+      originalUpgrades.push({ map: ctx.webServer.upgrades, path, route, wrapped })
+    }
   }
 
   if (originalRegisterFallback !== undefined) {
@@ -264,6 +335,12 @@ export function installServerCompat(ctx: CompatContext, deps: ServerCompatDeps):
     ctx.webServer.registerUpgrade = originalRegisterUpgrade
     if (originalRegisterFallback !== undefined) {
       ctx.webServer.registerFallback = originalRegisterFallback
+    }
+    for (const { map, path, route, wrapped } of originalRoutes) {
+      if (map.get(path) === wrapped) map.set(path, route)
+    }
+    for (const { map, path, route, wrapped } of originalUpgrades) {
+      if (map.get(path) === wrapped) map.set(path, route)
     }
   }, 'dsh-cloudflare-access: restore webServer.register')
 }

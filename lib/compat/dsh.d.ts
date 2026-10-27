@@ -25,6 +25,10 @@ export interface WebServerLike {
     register(route: WebRoute): () => void;
     registerUpgrade(route: WebUpgradeRoute): () => void;
     registerFallback?(handler: WebRoute['handler']): () => void;
+    /** DSH 0.2.1 exposes its route tables; used to wrap routes registered before this plugin. */
+    exact?: Map<string, WebRoute>;
+    prefixes?: Map<string, WebRoute>;
+    upgrades?: Map<string, WebUpgradeRoute>;
 }
 export interface ConnectionAdmission {
     peer?: unknown;
