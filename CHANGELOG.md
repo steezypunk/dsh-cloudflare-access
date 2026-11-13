@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Gate the dsh-superagent management panel (`/orchestrator`) the way the DSH API is gated. The panel exposes repository, account, policy, and prompt control with no authentication of its own, so a remote request on its prefix now needs the Host/Origin (`--trusted-host`) fence plus a valid Access JWT; loopback is unchanged, and the panel's own same-origin guard still runs behind the gate.
 - Document the listen address: it belongs to DSH's `webserver` row, not this plugin. DSH's Web CLI refuses `--host 0.0.0.0`, so binding all interfaces requires overriding the `webserver` row in the profile patch (plus `--trusted-host`).
 
 ## 2.1.1

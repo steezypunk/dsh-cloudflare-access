@@ -934,6 +934,102 @@ describe('better-sidebar /sidebar route integration', () => {
   })
 })
 
+describe('dsh-superagent /orchestrator route integration', () => {
+  async function setupOrchestrator() {
+    const pair = await generateKeyPair('RS256', { extractable: true })
+    const publicJwk = await exportJWK(pair.publicKey)
+    publicJwk.kid = 'k1'
+    publicJwk.alg = 'RS256'
+    publicJwk.use = 'sig'
+    const jwks = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ keys: [publicJwk] }))
+    })
+    await new Promise<void>((resolve) => { jwks.listen(0, '127.0.0.1', () => { resolve() }) })
+    const addr = jwks.address()
+    if (addr === null || typeof addr === 'string') throw new Error('port')
+    const origin = `http://127.0.0.1:${String(addr.port)}`
+    const webServer = createFakeWebServer()
+    const disposers: Array<() => void> = []
+    const ctx = {
+      webServer,
+      logger: { info() {}, warn() {} },
+      effect: collectEffects(disposers),
+      get(name: string) {
+        if (name === 'webRuntime') return { trustedHosts: ['superagent.example.com'] }
+        return undefined
+      },
+    }
+    const token = await new SignJWT({})
+      .setProtectedHeader({ alg: 'RS256', kid: 'k1' })
+      .setIssuedAt()
+      .setIssuer(origin)
+      .setAudience('aud')
+      .setExpirationTime('5m')
+      .sign(pair.privateKey)
+    return { jwks, origin, webServer, ctx, disposers, token }
+  }
+
+  function panelHandler() {
+    return async (_req: IncomingMessage, res: ServerResponse) => {
+      res.writeHead(200)
+      res.end('panel')
+    }
+  }
+
+  it('gates a future /orchestrator route with the Host/Origin fence and a JWT', async () => {
+    const setup = await setupOrchestrator()
+    applyServer(setup.ctx, { cloudflare: { teamDomain: setup.origin, audiences: ['aud'] } })
+    setup.webServer.register({ kind: 'prefix', path: '/orchestrator', handler: panelHandler() })
+    const route = setup.webServer.routes.get('prefix:/orchestrator')
+    if (route === undefined) throw new Error('route missing')
+
+    const missing = await invoke(route.handler, {
+      url: '/orchestrator/api/state',
+      headers: { host: 'superagent.example.com', origin: 'https://superagent.example.com' },
+    })
+    expect(missing.status).toBe(401)
+
+    const valid = await invoke(route.handler, {
+      url: '/orchestrator/api/state',
+      headers: {
+        host: 'superagent.example.com',
+        origin: 'https://superagent.example.com',
+        'cf-access-jwt-assertion': setup.token,
+      },
+    })
+    expect(valid.status).toBe(200)
+    expect(valid.body).toBe('panel')
+
+    // Loopback keeps the operator path: no JWT, the panel's own same-origin guard decides.
+    const loopback = await invoke(route.handler, {
+      url: '/orchestrator/api/state',
+      headers: { host: '127.0.0.1:3082' },
+    })
+    expect(loopback.status).toBe(200)
+
+    for (const dispose of setup.disposers) dispose()
+    setup.jwks.close()
+  })
+
+  it('wraps /orchestrator routes registered before the plugin', async () => {
+    const setup = await setupOrchestrator()
+    setup.webServer.register({ kind: 'prefix', path: '/orchestrator', handler: panelHandler() })
+    applyServer(setup.ctx, { cloudflare: { teamDomain: setup.origin, audiences: ['aud'] } })
+    const route = setup.webServer.prefixes.get('/orchestrator')
+    if (route === undefined) throw new Error('route missing')
+
+    const missing = await invoke(route.handler, {
+      url: '/orchestrator/api/state',
+      headers: { host: 'superagent.example.com', origin: 'https://superagent.example.com' },
+    })
+    expect(missing.status).toBe(401)
+
+    for (const dispose of setup.disposers) dispose()
+    setup.jwks.close()
+  })
+})
+
 async function invoke(
   handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>,
   input: { url: string, headers: Record<string, string> },

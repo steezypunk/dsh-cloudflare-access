@@ -12,9 +12,9 @@ import type { Duplex } from 'node:stream'
 import type { PluginConfig } from '../config.ts'
 import { httpStatusFor, logDenied, type PluginLogger } from '../server/authorization.ts'
 import type { JwtVerifier } from '../server/cloudflare-jwt.ts'
-import { decide, jwtParticipates } from '../server/policy.ts'
+import { decide, jwtParticipates, ORCHESTRATOR_METHOD } from '../server/policy.ts'
 import { readAccessJwt, type JwtVerification } from '../server/types.ts'
-import { API_PATH, REMOTE_STREAM_MUX_PATH, rpcMethodFromUrl } from './api-path.ts'
+import { API_PATH, ORCHESTRATOR_PATH, REMOTE_STREAM_MUX_PATH, rpcMethodFromUrl } from './api-path.ts'
 import { isTrustedApiRequest, requestIsLoopback, requestRemoteHostTrusted } from './dsh-trust.ts'
 
 export interface WebRoute {
@@ -118,8 +118,18 @@ function isSidebarRoute(route: WebRoute | WebUpgradeRoute): boolean {
   return isSidebarPath(route.path)
 }
 
+/**
+ * The dsh-superagent management panel registers one prefix route at
+ * ORCHESTRATOR_PATH and answers ORCHESTRATOR_PATH/api/*. It carries no
+ * authentication of its own, so behind a tunnel it is gated like a privileged
+ * DSH route: the Host/Origin fence plus a valid Access JWT.
+ */
+function isOrchestratorRoute(route: WebRoute): boolean {
+  return route.kind === 'prefix' && route.path === ORCHESTRATOR_PATH
+}
+
 function isGatedHttpRoute(route: WebRoute): boolean {
-  return isApiPrefix(route) || isSidebarRoute(route)
+  return isApiPrefix(route) || isSidebarRoute(route) || isOrchestratorRoute(route)
 }
 
 function isGatedUpgradeRoute(route: WebUpgradeRoute): boolean {
@@ -214,10 +224,11 @@ export function installServerCompat(ctx: CompatContext, deps: ServerCompatDeps):
 
   const gateHttp = (route: WebRoute): WebRoute => {
     const inner = route.handler
+    const orchestrator = isOrchestratorRoute(route)
     const wrapped: WebRoute = {
       ...route,
       handler: async (req, res) => {
-        const gate = await authorize(req, deps)
+        const gate = await authorize(req, deps, { orchestrator })
         if (gate.action === 'deny') {
           logDenied(logger, {
             method: gate.method,
@@ -306,7 +317,7 @@ export function installServerCompat(ctx: CompatContext, deps: ServerCompatDeps):
   if (originalRegisterFallback !== undefined) {
     ctx.webServer.registerFallback = (handler: WebRoute['handler']): (() => void) => {
       return originalRegisterFallback(async (req, res) => {
-        const gate = await authorize(req, deps, true)
+        const gate = await authorize(req, deps, { allowCrossSiteSkip: true })
         if (gate.action === 'deny') {
           logDenied(logger, {
             method: gate.method,
@@ -349,11 +360,19 @@ export function installServerCompat(ctx: CompatContext, deps: ServerCompatDeps):
  * Loopback 交给原 handler（DSH 自己走 token/Cookie）。
  * Access 登录回调经常是 `sec-fetch-site: cross-site` 导航，跳过 Cookie 只要求 Host 在 `--trusted-host` 中且 JWT 有效，不套用完整 Origin 栅栏。policy deny 仍要求完整 Host/Origin。
  */
+interface AuthorizeOptions {
+  /** A cross-site Access callback (the SPA fallback) may skip the browser-session fence once the Host/Origin fence and JWT hold. */
+  allowCrossSiteSkip?: boolean
+  /** The route is the dsh-superagent management panel, so a remote request is always privileged. */
+  orchestrator?: boolean
+}
+
 async function authorize(
   req: IncomingMessage,
   deps: ServerCompatDeps,
-  allowCrossSiteSkip = false,
+  options: AuthorizeOptions = {},
 ): Promise<Gate> {
+  const { allowCrossSiteSkip = false, orchestrator = false } = options
   const headers = nodeHeaders(req)
   if (requestIsLoopback(headers)) return { action: 'forward', skipBrowserSession: false }
 
@@ -361,7 +380,7 @@ async function authorize(
   const remoteHostTrusted = requestRemoteHostTrusted(headers, trustedHosts)
   const hostOriginTrusted = isTrustedApiRequest(headers, trustedHosts)
 
-  const method = rpcMethodFromUrl(req.url)
+  const method = orchestrator ? ORCHESTRATOR_METHOD : rpcMethodFromUrl(req.url)
   const token = readAccessJwt(headers)
   const tokenPresent = token !== undefined && token.trim() !== ''
   const needPolicyJwt = hostOriginTrusted && jwtParticipates({
