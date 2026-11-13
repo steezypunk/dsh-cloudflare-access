@@ -43,7 +43,9 @@ So `main` may move freely; a pin only changes when we deliberately bump it.
   for a branch that is a fast-forward of `main`.
 - After a merge that moves the commits a consumer pins, bump that pin. The
   run-boxes pin is `DSH_CF_ACCESS_COMMIT` in `tool/installer/dsh/Taskfile.yml`.
-- Committed `lib/` must match a fresh `pnpm build`. CI enforces it; run
+- Committed `lib/` must match a fresh `pnpm build`. The `ci` workflow checks it
+  (`pnpm build`, then `git diff --exit-code -- lib`); if Actions is not running
+  on the fork yet, enable it in the repo's Actions tab. Locally run
   `pnpm build && git status --porcelain` before pushing and keep it clean.
 - New behavior needs a test in `test/` and a CHANGELOG entry under
   `## Unreleased`.
