@@ -12,7 +12,7 @@ This is a dual-face **Profile Bundle + Web Client** plugin. It does **not** repl
 
 It does not ship a login page, password store, MFA, session table, or Cloudflare API client.
 
-Plugin **`2.1.x`** targets DeepSeek Harness **`0.2.1`** (live-tested on `0.2.1-rc.3` and `0.2.1-rc.4`). Plugin **`2.0.x`** covers the `0.2.0` line (fork branch) and upstream `0.1.5-alpha.1`. Plugin **`1.0.x`** is the line before DSH `0.1.2` (live-tested on `0.1.1-rc.2`). Do not assume other DSH releases work until the [compatibility matrix](#compatibility) is updated.
+Plugin **`2.2.x`** targets DeepSeek Harness **`0.2.2`** (peers `^0.2.2-rc.2`, `@deepseek-ai/cordis` `~4.1.0`): it wraps the DSH 0.2.2 `{ resource }` fallback seat and gates the dsh-superagent `/orchestrator` prefix. Plugin **`2.1.x`** covers the `0.2.1` line (live-tested on `0.2.1-rc.3` and `0.2.1-rc.4`). Plugin **`2.0.x`** covers the `0.2.0` line (fork branch) and upstream `0.1.5-alpha.1`. Plugin **`1.0.x`** is the line before DSH `0.1.2` (live-tested on `0.1.1-rc.2`). Do not assume other DSH releases work until the [compatibility matrix](#compatibility) is updated.
 
 ## Architecture
 
@@ -215,6 +215,7 @@ This plugin does not authorize `host.pickDirectory` or `host.openPath`. Some nat
 | Plugin | DSH | Status |
 | --- | --- | --- |
 | 1.0.x | 0.1.1-rc.2（0.1.2 之前） | Live-tested (Web profile, remote Settings / Credentials). `apiProxy` + privileged pin. Not compatible with DSH 0.1.2+. |
+| 2.2.x | 0.2.2-rc.2 | Targets the 0.2.2 line: the `{ resource }` fallback seat and any resource-answered gated route are wrapped, and the dsh-superagent `/orchestrator` prefix is gated. Unit/integration tests; run-boxes consumes it on 0.2.2-rc.2. |
 | 2.1.x | 0.2.1-rc.3 / 0.2.1-rc.4 | Live-tested with a real Cloudflare Access JWT on a Web profile: remote `/api/settings/describe` 200, missing 401, invalid 403. |
 | 2.0.x | 0.1.5-alpha.1; fork branch `dsh-0.2.0-rc.2` covers 0.2.0 | Live-tested on a Web profile behind Cloudflare Access (remote Settings without DSH `?token=`). Unit/integration tests. CI does not start a DSH process. |
 

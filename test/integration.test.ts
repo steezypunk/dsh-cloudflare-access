@@ -4,13 +4,18 @@ import { generateKeyPair, SignJWT, exportJWK } from 'jose'
 import { apply as applyServer } from '../src/server/index.ts'
 import { httpStatusFor } from '../src/server/authorization.ts'
 import { decide } from '../src/server/policy.ts'
-import { installServerCompat, type WebRoute, type WebUpgradeRoute } from '../src/compat/dsh.ts'
+import { installServerCompat, type WebRoute, type WebResourceRoute, type WebUpgradeRoute } from '../src/compat/dsh.ts'
 import type { JwtVerification } from '../src/server/types.ts'
+
+type FakeFallback =
+  | ((req: IncomingMessage, res: ServerResponse) => void | Promise<void>)
+  | Pick<WebResourceRoute, 'resource'>
 
 interface FakeWebServer {
   register(route: WebRoute): () => void
   registerUpgrade(route: WebUpgradeRoute): () => void
-  registerFallback?(handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>): () => void
+  registerFallback?(fallback: FakeFallback): () => void
+  fallback?: FakeFallback
   routes: Map<string, WebRoute>
   upgrades: Map<string, WebUpgradeRoute>
   exact: Map<string, WebRoute>
@@ -29,11 +34,15 @@ function createFakeWebServer(): FakeWebServer {
   const upgrades = new Map<string, WebUpgradeRoute>()
   const exact = new Map<string, WebRoute>()
   const prefixes = new Map<string, WebRoute>()
-  return {
+  const webServer: FakeWebServer = {
     routes,
     upgrades,
     exact,
     prefixes,
+    registerFallback(fallback) {
+      webServer.fallback = fallback
+      return () => { webServer.fallback = undefined }
+    },
     register(route) {
       routes.set(`${route.kind}:${route.path}`, route)
       const table = route.kind === 'exact' ? exact : prefixes
@@ -48,6 +57,7 @@ function createFakeWebServer(): FakeWebServer {
       return () => { upgrades.delete(route.path) }
     },
   }
+  return webServer
 }
 
 describe('server compat integration', () => {
@@ -618,8 +628,9 @@ describe('Access JWT substitutes for the DSH launch-token cookie', () => {
   it('lets remote index through authorizeIndex after a valid JWT', async () => {
     const fallbacks: Array<(req: IncomingMessage, res: ServerResponse) => void | Promise<void>> = []
     const webServer = createFakeWebServer()
-    webServer.registerFallback = (handler) => {
-      fallbacks.push(handler)
+    webServer.registerFallback = (fallback) => {
+      if (typeof fallback !== 'function') throw new Error('expected a handler fallback')
+      fallbacks.push(fallback)
       return () => { fallbacks.pop() }
     }
     const disposers: Array<() => void> = []
@@ -664,8 +675,9 @@ describe('Access JWT substitutes for the DSH launch-token cookie', () => {
   it('skips the DSH cookie on Access login callbacks marked cross-site', async () => {
     const fallbacks: Array<(req: IncomingMessage, res: ServerResponse) => void | Promise<void>> = []
     const webServer = createFakeWebServer()
-    webServer.registerFallback = (handler) => {
-      fallbacks.push(handler)
+    webServer.registerFallback = (fallback) => {
+      if (typeof fallback !== 'function') throw new Error('expected a handler fallback')
+      fallbacks.push(fallback)
       return () => { fallbacks.pop() }
     }
     const disposers: Array<() => void> = []
@@ -1024,6 +1036,100 @@ describe('dsh-superagent /orchestrator route integration', () => {
       headers: { host: 'superagent.example.com', origin: 'https://superagent.example.com' },
     })
     expect(missing.status).toBe(401)
+
+    for (const dispose of setup.disposers) dispose()
+    setup.jwks.close()
+  })
+})
+
+describe('DSH 0.2.2 resource fallback integration', () => {
+  async function setupFallback() {
+    const pair = await generateKeyPair('RS256', { extractable: true })
+    const publicJwk = await exportJWK(pair.publicKey)
+    publicJwk.kid = 'k1'
+    publicJwk.alg = 'RS256'
+    publicJwk.use = 'sig'
+    const jwks = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ keys: [publicJwk] }))
+    })
+    await new Promise<void>((resolve) => { jwks.listen(0, '127.0.0.1', () => { resolve() }) })
+    const addr = jwks.address()
+    if (addr === null || typeof addr === 'string') throw new Error('port')
+    const origin = `http://127.0.0.1:${String(addr.port)}`
+    const webServer = createFakeWebServer()
+    const disposers: Array<() => void> = []
+    const ctx = {
+      webServer,
+      logger: { info() {}, warn() {} },
+      effect: collectEffects(disposers),
+      get(name: string) {
+        if (name === 'webRuntime') return { trustedHosts: ['dsh.example.com'] }
+        return undefined
+      },
+    }
+    const token = await new SignJWT({})
+      .setProtectedHeader({ alg: 'RS256', kid: 'k1' })
+      .setIssuedAt()
+      .setIssuer(origin)
+      .setAudience('aud')
+      .setExpirationTime('5m')
+      .sign(pair.privateKey)
+    return { jwks, origin, webServer, ctx, disposers, token }
+  }
+
+  function fallbackRequest(headers: Record<string, string>): Request {
+    return { url: 'http://dsh.example.com/', headers } as unknown as Request
+  }
+
+  it('gates a { resource } fallback seat', async () => {
+    const setup = await setupFallback()
+    applyServer(setup.ctx, {
+      cloudflare: { teamDomain: setup.origin, audiences: ['aud'] },
+      auth: { ordinary: 'required' },
+    })
+    setup.webServer.registerFallback!({ resource: async () => new Response('index', { status: 200 }) })
+    const fallback = setup.webServer.fallback
+    if (fallback === undefined || typeof fallback === 'function') throw new Error('resource fallback missing')
+
+    const missing = await fallback.resource(fallbackRequest({
+      host: 'dsh.example.com',
+      origin: 'https://dsh.example.com',
+    }))
+    expect(missing.status).toBe(401)
+
+    const valid = await fallback.resource(fallbackRequest({
+      host: 'dsh.example.com',
+      origin: 'https://dsh.example.com',
+      'cf-access-jwt-assertion': setup.token,
+    }))
+    expect(valid.status).toBe(200)
+    await expect(valid.text()).resolves.toBe('index')
+
+    // Loopback still reaches the fallback without a JWT.
+    const loopback = await fallback.resource(fallbackRequest({ host: '127.0.0.1:3080' }))
+    expect(loopback.status).toBe(200)
+
+    for (const dispose of setup.disposers) dispose()
+    setup.jwks.close()
+  })
+
+  it('keeps a bare-handler fallback working', async () => {
+    const setup = await setupFallback()
+    applyServer(setup.ctx, { cloudflare: { teamDomain: setup.origin, audiences: ['aud'] } })
+    setup.webServer.registerFallback!(async (_req, res) => {
+      res.writeHead(200)
+      res.end('index')
+    })
+    const fallback = setup.webServer.fallback
+    if (typeof fallback !== 'function') throw new Error('handler fallback missing')
+
+    const result = await invoke(fallback, {
+      url: '/',
+      headers: { host: 'dsh.example.com', origin: 'https://dsh.example.com' },
+    })
+    expect(result.status).toBe(200)
+    expect(result.body).toBe('index')
 
     for (const dispose of setup.disposers) dispose()
     setup.jwks.close()

@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## 2.2.0
 
+- Target DSH `0.2.2` (peers `@deepseek-ai/dsh-client-connection` and `@deepseek-ai/dsh-host-webserver` at `^0.2.2-rc.2`, `@deepseek-ai/cordis` at `~4.1.0`). DSH 0.2.2 claims the SPA fallback seat with `{ resource }` (a Fetch `Request` -> `Response` responder) instead of a bare handler; the fallback gate now wraps both shapes, and it also covers resource-answered named routes. This replaces the run-boxes vendored fallback patch.
 - Gate the dsh-superagent management panel (`/orchestrator`) the way the DSH API is gated. The panel exposes repository, account, policy, and prompt control with no authentication of its own, so a remote request on its prefix now needs the Host/Origin (`--trusted-host`) fence plus a valid Access JWT; loopback is unchanged, and the panel's own same-origin guard still runs behind the gate.
 - Document the listen address: it belongs to DSH's `webserver` row, not this plugin. DSH's Web CLI refuses `--host 0.0.0.0`, so binding all interfaces requires overriding the `webserver` row in the profile patch (plus `--trusted-host`).
 

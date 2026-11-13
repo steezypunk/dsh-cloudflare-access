@@ -17,17 +17,37 @@ export interface WebRoute {
     path: string;
     handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
 }
+/**
+ * DSH 0.2.2 answers some routes, and the fallback seat, with a Fetch
+ * `Request` -> `Response` resource instead of a node handler. The gate covers
+ * those too.
+ */
+export interface WebResourceRoute {
+    kind: 'exact' | 'prefix';
+    path: string;
+    resource: (request: Request, peer?: unknown) => Promise<Response>;
+}
+/** The resource half of a fallback seat registration. */
+export type WebResourceFallback = Pick<WebResourceRoute, 'resource'>;
+/** A node HTTP request or a Fetch Request reaching the gate. */
+export type GatedRequest = {
+    url?: string;
+    headers: IncomingMessage['headers'];
+} | {
+    url: string;
+    headers: Headers;
+};
 export interface WebUpgradeRoute {
     path: string;
     handler: (req: IncomingMessage, socket: Duplex, head: Buffer) => void | Promise<void>;
 }
 export interface WebServerLike {
-    register(route: WebRoute): () => void;
+    register(route: WebRoute | WebResourceRoute): () => void;
     registerUpgrade(route: WebUpgradeRoute): () => void;
-    registerFallback?(handler: WebRoute['handler']): () => void;
-    /** DSH 0.2.1 exposes its route tables; used to wrap routes registered before this plugin. */
-    exact?: Map<string, WebRoute>;
-    prefixes?: Map<string, WebRoute>;
+    registerFallback?(fallback: WebRoute['handler'] | WebResourceFallback): () => void;
+    /** DSH 0.2.1+ exposes its route tables; used to wrap routes registered before this plugin. */
+    exact?: Map<string, WebRoute | WebResourceRoute>;
+    prefixes?: Map<string, WebRoute | WebResourceRoute>;
     upgrades?: Map<string, WebUpgradeRoute>;
 }
 export interface ConnectionAdmission {
