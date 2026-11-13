@@ -1,5 +1,9 @@
 # dsh-cloudflare-access
 
+> **分支说明：** 本仓库是我们维护的 fork（`steezypunk/dsh-cloudflare-access`）。
+> `main` 与上游分叉，承载 DSH `0.2.x` 线以及 `dsh-superagent` 管理面板
+> （`/orchestrator` 前缀）的 Access 网关。详见 [FORK.md](./FORK.md)。
+
 [English](./README.md)
 
 面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的 Cloudflare Access JWT 再验证与远程 privileged 授权。
