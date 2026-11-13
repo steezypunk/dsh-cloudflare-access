@@ -35,14 +35,25 @@ So `main` may move freely; a pin only changes when we deliberately bump it.
 ## Branching and merging
 
 - Do work on a topic branch and open a PR into `main`, even though this is our
-  own fork. The PR is the review record; merge with **Rebase and merge** so
-  `main` stays linear and the PR commit SHAs (which consumers may pin) survive.
-- Never **squash** a branch that a consumer has already pinned: squashing
-  discards the pinned commit SHAs.
+  own fork. The PR is the review record.
+- Merge with **Create a merge commit**, or fast-forward `main` directly when it
+  is strictly behind. Do **not** use *Rebase and merge* or *Squash and merge*:
+  both discard the PR commit SHAs, so a consumer pin breaks. GitHub's
+  rebase-merge recomputes every commit's SHA (it rewrites the committer), even
+  for a branch that is a fast-forward of `main`.
+- After a merge that moves the commits a consumer pins, bump that pin. The
+  run-boxes pin is `DSH_CF_ACCESS_COMMIT` in `tool/installer/dsh/Taskfile.yml`.
 - Committed `lib/` must match a fresh `pnpm build`. CI enforces it; run
   `pnpm build && git status --porcelain` before pushing and keep it clean.
 - New behavior needs a test in `test/` and a CHANGELOG entry under
   `## Unreleased`.
+
+## History note
+
+The initial consolidation onto `main` was merged with *Rebase and merge*, so the
+commit SHAs on `main` differ from the old `dsh-0.2.1-rc.3` and
+`run-box-superagent` branches even though the trees are identical. Consumers that
+pinned a pre-consolidation SHA must re-pin to the commit now on `main`.
 
 ## Keeping close to upstream
 
