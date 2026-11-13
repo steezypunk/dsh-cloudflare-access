@@ -1,5 +1,9 @@
 # dsh-cloudflare-access
 
+> **Fork note:** this is our maintained fork (`steezypunk/dsh-cloudflare-access`).
+> `main` diverges from upstream and carries the DSH `0.2.x` line plus
+> `dsh-superagent` gating. See [FORK.md](./FORK.md).
+
 [简体中文](./README.zh-CN.md)
 
 Cloudflare Access JWT verification and remote privileged authorization for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
