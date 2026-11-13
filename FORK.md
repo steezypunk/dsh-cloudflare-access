@@ -7,13 +7,18 @@ diverge from upstream.
 ## What `main` carries over upstream
 
 Upstream is still on the DSH `0.1.5-alpha.1` line (its `main` has not moved since
-2026-09-09) and has not merged our earlier `0.2.x` PRs. Our `main` instead tracks
-the DSH `0.2` line and layers the changes we need:
+2026-09-09) and has not merged our earlier `0.2.x` PRs. Our `main` instead
+targets the DSH **`0.2.2`** line (peers `^0.2.2-rc.2`, `@deepseek-ai/cordis`
+`~4.1.0`) and layers the changes we need:
 
-- DSH `0.2.1` support (route tables, `connection.admit()`, trusted hosts read
-  from the Connection service with a `--trusted-host` argv fallback).
+- DSH `0.2.2` target: the DSH 0.2.2 SPA fallback seat is registered as
+  `{ resource }`, so the gate wraps both the resource and the bare-handler shape
+  (and any resource-answered named route). This lives in-tree; run-boxes no
+  longer carries a vendored fallback patch.
+- DSH `0.2.1` support kept from the line below (route tables,
+  `connection.admit()`, trusted hosts read from the Connection service with a
+  `--trusted-host` argv fallback).
 - `dsh-better-sidebar` `/sidebar/*` gating.
-- DSH `0.2.2` SPA-fallback (`{ resource }`) compatibility.
 - Gating the `dsh-superagent` management panel: the `/orchestrator` prefix is
   treated as a privileged route, so a remote request needs the Host/Origin
   (`--trusted-host`) fence plus a valid Access JWT. Loopback is unchanged.

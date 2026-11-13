@@ -23,18 +23,37 @@ export interface WebRoute {
   handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>
 }
 
+/**
+ * DSH 0.2.2 answers some routes, and the fallback seat, with a Fetch
+ * `Request` -> `Response` resource instead of a node handler. The gate covers
+ * those too.
+ */
+export interface WebResourceRoute {
+  kind: 'exact' | 'prefix'
+  path: string
+  resource: (request: Request, peer?: unknown) => Promise<Response>
+}
+
+/** The resource half of a fallback seat registration. */
+export type WebResourceFallback = Pick<WebResourceRoute, 'resource'>
+
+/** A node HTTP request or a Fetch Request reaching the gate. */
+export type GatedRequest =
+  | { url?: string, headers: IncomingMessage['headers'] }
+  | { url: string, headers: Headers }
+
 export interface WebUpgradeRoute {
   path: string
   handler: (req: IncomingMessage, socket: Duplex, head: Buffer) => void | Promise<void>
 }
 
 export interface WebServerLike {
-  register(route: WebRoute): () => void
+  register(route: WebRoute | WebResourceRoute): () => void
   registerUpgrade(route: WebUpgradeRoute): () => void
-  registerFallback?(handler: WebRoute['handler']): () => void
-  /** DSH 0.2.1 exposes its route tables; used to wrap routes registered before this plugin. */
-  exact?: Map<string, WebRoute>
-  prefixes?: Map<string, WebRoute>
+  registerFallback?(fallback: WebRoute['handler'] | WebResourceFallback): () => void
+  /** DSH 0.2.1+ exposes its route tables; used to wrap routes registered before this plugin. */
+  exact?: Map<string, WebRoute | WebResourceRoute>
+  prefixes?: Map<string, WebRoute | WebResourceRoute>
   upgrades?: Map<string, WebUpgradeRoute>
 }
 
@@ -87,7 +106,7 @@ const MISSING_JWT: JwtVerification = {
   audienceMatched: null,
 }
 
-function nodeHeaders(req: IncomingMessage): Record<string, string | string[] | undefined> {
+function requestHeaders(req: GatedRequest): IncomingMessage['headers'] | Headers {
   return req.headers
 }
 
@@ -102,7 +121,7 @@ function rejectUpgrade(socket: Duplex, status: 401 | 403): void {
   socket.destroy()
 }
 
-function isApiPrefix(route: WebRoute): boolean {
+function isApiPrefix(route: WebRoute | WebResourceRoute): boolean {
   return route.kind === 'prefix' && route.path === API_PATH
 }
 
@@ -114,7 +133,7 @@ function isSidebarPath(path: string): boolean {
   return path === '/sidebar' || path.startsWith('/sidebar/')
 }
 
-function isSidebarRoute(route: WebRoute | WebUpgradeRoute): boolean {
+function isSidebarRoute(route: { path: string }): boolean {
   return isSidebarPath(route.path)
 }
 
@@ -124,12 +143,23 @@ function isSidebarRoute(route: WebRoute | WebUpgradeRoute): boolean {
  * authentication of its own, so behind a tunnel it is gated like a privileged
  * DSH route: the Host/Origin fence plus a valid Access JWT.
  */
-function isOrchestratorRoute(route: WebRoute): boolean {
+function isOrchestratorRoute(route: WebRoute | WebResourceRoute): boolean {
   return route.kind === 'prefix' && route.path === ORCHESTRATOR_PATH
 }
 
-function isGatedHttpRoute(route: WebRoute): boolean {
+function isGatedHttpRoute(route: WebRoute | WebResourceRoute): boolean {
   return isApiPrefix(route) || isSidebarRoute(route) || isOrchestratorRoute(route)
+}
+
+/** Whether a route registration is answered by a Fetch resource rather than a node handler. */
+function isResourceRoute(route: WebRoute | WebResourceRoute): route is WebResourceRoute {
+  return typeof (route as { resource?: unknown }).resource === 'function'
+}
+
+/** Whether a fallback registration is the DSH 0.2.2 `{ resource }` shape rather than a handler. */
+function isResourceFallback(fallback: WebRoute['handler'] | WebResourceFallback): fallback is WebResourceFallback {
+  return typeof fallback === 'object' && fallback !== null
+    && typeof (fallback as { resource?: unknown }).resource === 'function'
 }
 
 function isGatedUpgradeRoute(route: WebUpgradeRoute): boolean {
@@ -161,7 +191,7 @@ function restoreMethod<K extends 'requestRejection' | 'authorizeIndex'>(
 
 function wrapBrowserSession(
   connection: ConnectionAuthLike,
-  skipped: WeakSet<IncomingMessage>,
+  skipped: WeakSet<object>,
   effect: CompatContext['effect'],
 ): void {
   const hadOwnRejection = Object.prototype.hasOwnProperty.call(connection, 'requestRejection')
@@ -213,10 +243,12 @@ export function installServerCompat(ctx: CompatContext, deps: ServerCompatDeps):
   const originalRegisterUpgrade = ctx.webServer.registerUpgrade
   const originalRegisterFallback = ctx.webServer.registerFallback?.bind(ctx.webServer)
   const logger: PluginLogger = ctx.logger ?? { info() {}, warn() {} }
-  const skipped = new WeakSet<IncomingMessage>()
+  // Keyed by whatever object the gate saw: a node request for a handler route,
+  // or a Fetch Request for a resource route.
+  const skipped = new WeakSet<object>()
 
-  const markAndForward = (req: IncomingMessage, skip: boolean): void => {
-    if (skip) skipped.add(req)
+  const markAndForward = (request: object, skip: boolean): void => {
+    if (skip) skipped.add(request)
   }
 
   const wrappedHttpRoutes = new WeakSet<object>()
@@ -246,6 +278,47 @@ export function installServerCompat(ctx: CompatContext, deps: ServerCompatDeps):
     return wrapped
   }
 
+  /**
+   * Wrap a Fetch-resource responder: run the gate, answer a denial as a
+   * `Response`, then hand the request to the resource. Used for the DSH 0.2.2
+   * `{ resource }` fallback and any resource-answered named route.
+   */
+  const gateResourceFn = (
+    inner: WebResourceRoute['resource'],
+    orchestrator: boolean,
+    allowCrossSiteSkip: boolean,
+  ): WebResourceRoute['resource'] => {
+    return async (request, peer) => {
+      const gate = await authorize(
+        { url: request.url, headers: request.headers },
+        deps,
+        { orchestrator, allowCrossSiteSkip },
+      )
+      if (gate.action === 'deny') {
+        logDenied(logger, {
+          method: gate.method,
+          reason: gate.reason,
+          privileged: gate.privileged,
+        })
+        return new Response(gate.body, { status: gate.status })
+      }
+      markAndForward(request, gate.skipBrowserSession)
+      return inner(request, peer)
+    }
+  }
+
+  const gateHttpRoute = (route: WebRoute | WebResourceRoute): WebRoute | WebResourceRoute => {
+    if (isResourceRoute(route)) {
+      const wrapped: WebResourceRoute = {
+        ...route,
+        resource: gateResourceFn(route.resource, isOrchestratorRoute(route), false),
+      }
+      wrappedHttpRoutes.add(wrapped)
+      return wrapped
+    }
+    return gateHttp(route)
+  }
+
   const gateUpgrade = (route: WebUpgradeRoute): WebUpgradeRoute => {
     const inner = route.handler
     const wrapped: WebUpgradeRoute = {
@@ -269,9 +342,9 @@ export function installServerCompat(ctx: CompatContext, deps: ServerCompatDeps):
     return wrapped
   }
 
-  ctx.webServer.register = (route: WebRoute): (() => void) => {
+  ctx.webServer.register = (route: WebRoute | WebResourceRoute): (() => void) => {
     if (!isGatedHttpRoute(route)) return originalRegister.call(ctx.webServer, route)
-    return originalRegister.call(ctx.webServer, gateHttp(route))
+    return originalRegister.call(ctx.webServer, gateHttpRoute(route))
   }
 
   ctx.webServer.registerUpgrade = (route: WebUpgradeRoute): (() => void) => {
@@ -280,10 +353,10 @@ export function installServerCompat(ctx: CompatContext, deps: ServerCompatDeps):
   }
 
   interface OriginalHttpRoute {
-    map: Map<string, WebRoute>
+    map: Map<string, WebRoute | WebResourceRoute>
     path: string
-    route: WebRoute
-    wrapped: WebRoute
+    route: WebRoute | WebResourceRoute
+    wrapped: WebRoute | WebResourceRoute
   }
   interface OriginalUpgradeRoute {
     map: Map<string, WebUpgradeRoute>
@@ -300,7 +373,7 @@ export function installServerCompat(ctx: CompatContext, deps: ServerCompatDeps):
     if (map === undefined) continue
     for (const [path, route] of map) {
       if (!isGatedHttpRoute(route) || wrappedHttpRoutes.has(route)) continue
-      const wrapped = gateHttp(route)
+      const wrapped = gateHttpRoute(route)
       map.set(path, wrapped)
       originalRoutes.push({ map, path, route, wrapped })
     }
@@ -315,7 +388,16 @@ export function installServerCompat(ctx: CompatContext, deps: ServerCompatDeps):
   }
 
   if (originalRegisterFallback !== undefined) {
-    ctx.webServer.registerFallback = (handler: WebRoute['handler']): (() => void) => {
+    ctx.webServer.registerFallback = (
+      fallback: WebRoute['handler'] | WebResourceFallback,
+    ): (() => void) => {
+      // DSH 0.2.2 claims the fallback seat with `{ resource }` (the SPA dist
+      // server); earlier lines registered a bare handler. Gate both.
+      if (isResourceFallback(fallback)) {
+        return originalRegisterFallback({
+          resource: gateResourceFn(fallback.resource, false, true),
+        })
+      }
       return originalRegisterFallback(async (req, res) => {
         const gate = await authorize(req, deps, { allowCrossSiteSkip: true })
         if (gate.action === 'deny') {
@@ -328,7 +410,7 @@ export function installServerCompat(ctx: CompatContext, deps: ServerCompatDeps):
           return
         }
         markAndForward(req, gate.skipBrowserSession)
-        await handler(req, res)
+        await fallback(req, res)
       })
     }
   }
@@ -368,12 +450,12 @@ interface AuthorizeOptions {
 }
 
 async function authorize(
-  req: IncomingMessage,
+  req: GatedRequest,
   deps: ServerCompatDeps,
   options: AuthorizeOptions = {},
 ): Promise<Gate> {
   const { allowCrossSiteSkip = false, orchestrator = false } = options
-  const headers = nodeHeaders(req)
+  const headers = requestHeaders(req)
   if (requestIsLoopback(headers)) return { action: 'forward', skipBrowserSession: false }
 
   const trustedHosts = deps.getTrustedHosts()
