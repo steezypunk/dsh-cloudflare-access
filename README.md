@@ -59,6 +59,8 @@ A valid JWT never authorizes an arbitrary Host or Origin. Loopback (`localhost` 
 
 Keep Origin reachable only from Cloudflare (or equivalent ingress). Installing this plugin is not a reason to put DSH on the public internet. Details: [SECURITY.md](./SECURITY.md).
 
+The gate covers the dsh-superagent management panel too. Its prefix (`/orchestrator`) is registered on the same loopback web server and exposes repository, account, policy, and prompt control with no authentication of its own, so a remote request on it is treated as privileged: the Host/Origin fence (`--trusted-host`) plus a valid Access JWT are required, while loopback is unchanged.
+
 ![Remote privileged request path](./docs/assets/archify/privileged-request.svg)
 
 Host/Origin runs first. A valid JWT never rewrites Host to loopback. Privileged success goes to the original `/api` handler (DSH Remote). On a remote trusted host, a valid Access JWT also skips DSH's launch-token cookie. Missing or invalid JWT returns 401/403 and never enters the privileged implementation. Loopback does not read JWT and still uses the official DSH token/cookie.

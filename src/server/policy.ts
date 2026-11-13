@@ -2,6 +2,15 @@ import type { OrdinaryMode } from '../config.ts'
 import type { JwtFailureReason, JwtVerification } from './types.ts'
 
 /**
+ * Synthetic method for the dsh-superagent management panel (`/orchestrator`).
+ * Its routes are not Typert Remote endpoints, but the panel exposes repository,
+ * account, policy, and prompt control with no authentication of its own, so a
+ * remote request is always privileged: the Host/Origin fence plus a valid
+ * Access JWT are required.
+ */
+export const ORCHESTRATOR_METHOD = 'orchestrator/management'
+
+/**
  * Remote methods this plugin may authorize with a valid JWT.
  * Names match DSH 0.1.5-alpha.1 Typert Remote endpoints (`namespace/method`).
  * Native directory-picker / host.openPath stay off this list.
@@ -21,6 +30,7 @@ export const PRIVILEGED_METHODS = new Set<string>([
   'agentPresets/copy',
   'agentPresets/deletePreset',
   'llm/discoverModels',
+  ORCHESTRATOR_METHOD,
 ])
 
 export type AuthClass = 'loopback' | 'privileged' | 'ordinary'
